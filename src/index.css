@@ -2,7 +2,4 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #09090b; /* Warna zinc-950 */
-  color: #f4f4f5; /* Warna teks default */
-}
+/* Kode CSS manual Anda di bawah sini jika ada */
