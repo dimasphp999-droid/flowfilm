@@ -1,26 +1,26 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { 
     Sparkles, Wand2, FileText, ChevronRight, ChevronLeft, 
     Upload, List, Grid, Trash2, Plus, Film, FolderOpen, 
     Images, Box, Copy, Terminal, AlertCircle, History, 
     Save, Check, ChartPie, CheckCircle, RefreshCw, 
     Download, Printer, Share2, Lock, Loader2, PenTool,
-    Settings, Camera, ImagePlus, Eye, Link as LinkIcon
+    Settings, Eye
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection } from 'firebase/firestore';
 
 let app, auth, db, appId;
 try {
-    if (typeof __firebase_config !== 'undefined') {
-        const firebaseConfig = JSON.parse(__firebase_config);
+    if (typeof window !== 'undefined' && window.__firebase_config) {
+        const firebaseConfig = JSON.parse(window.__firebase_config);
         app = initializeApp(firebaseConfig);
         auth = getAuth(app);
         db = getFirestore(app);
-        appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        appId = window.__app_id || 'default-app-id';
     }
-} catch (error) {
+} catch {
     console.warn("Firebase tidak terkonfigurasi. Fitur Cloud Share akan nonaktif.");
 }
 
@@ -33,7 +33,7 @@ const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, b
     const parts = [{ text: prompt }];
     
     if (base64Image) {
-        const match = base64Image.match(/^data:(image\/[a-zA-Z]*);base64,([^\"]*)$/);
+        const match = base64Image.match(/^data:(image\/[a-zA-Z]*);base64,([^"]*)$/);
         if (match) {
             parts.push({
                 inlineData: {
@@ -118,7 +118,7 @@ const extractPdfText = async (file) => {
         return fullText;
     } catch (err) {
         console.error("Gagal membaca PDF:", err);
-        throw new Error("Gagal membaca teks dari PDF. Pastikan file PDF tidak terenkripsi.");
+        throw new Error("Gagal membaca teks dari PDF. Pastikan file PDF tidak terenkripsi.", { cause: err });
     }
 };
 
@@ -248,7 +248,7 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly, apiKey }) =>
             try {
                 const text = await extractPdfText(file);
                 setProject({ ...project, scriptText: text });
-            } catch (err) {
+            } catch {
                 setErrorMsg("Gagal membaca file PDF. Pastikan file PDF valid.");
             }
             setIsReadingPdf(false);
@@ -535,10 +535,10 @@ const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActive
         setAssets(assets.filter(a => a.id !== id));
     };
 
-    const addFromGlobal = (globalAsset) => {
+    const handleAddFromGlobal = (globalAsset) => {
         if(isReadOnly) return;
         if (!assets.find(a => a.id === globalAsset.id)) {
-            setAssets([...assets, { ...globalAsset, id: Date.now() }]);
+            setAssets(prev => [...prev, { ...globalAsset, id: Date.now() }]);
         }
     };
 
@@ -618,7 +618,7 @@ const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActive
                                 <h3 className="text-sm font-semibold mb-3 text-zinc-400">Library Global (Pernah Diupload)</h3>
                                 <div className="flex flex-wrap gap-2">
                                     {globalAssets.map(ga => (
-                                        <button key={ga.id} onClick={() => addFromGlobal(ga)} className="text-xs bg-zinc-800 border border-zinc-700 hover:border-indigo-500 px-2 py-1.5 rounded flex items-center gap-2 transition-colors">
+                                        <button key={ga.id} onClick={() => handleAddFromGlobal(ga)} className="text-xs bg-zinc-800 border border-zinc-700 hover:border-indigo-500 px-2 py-1.5 rounded flex items-center gap-2 transition-colors">
                                             <img src={ga.fileUrl} className="w-4 h-4 rounded-sm object-cover" />
                                             {ga.name} <Plus className="w-3 h-3 text-zinc-500" />
                                         </button>
@@ -972,7 +972,7 @@ const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets,
                 } else {
                     showDialog("Format file tidak valid.");
                 }
-            } catch (err) {
+            } catch {
                 showDialog("Gagal membaca file JSON.");
             }
         };
@@ -990,8 +990,8 @@ const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets,
         }
         setIsSharing(true);
         try {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
+            if (typeof window !== 'undefined' && window.__initial_auth_token) {
+                await signInWithCustomToken(auth, window.__initial_auth_token);
             } else {
                 await signInAnonymously(auth);
             }
@@ -1039,7 +1039,7 @@ const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets,
                 const url = new URL(window.location);
                 url.searchParams.delete('share');
                 window.history.pushState({}, '', url);
-            } catch (e) {
+            } catch {
                 console.warn("History API diblokir oleh sandbox environment.");
             }
         });
@@ -1170,7 +1170,7 @@ const App = () => {
     const [shots, setShots] = useState([]);
     const [assets, setAssets] = useState([]);
     const [globalAssets, setGlobalAssets] = useState([]);
-    const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
+    const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY || ''));
     
     const [isReadOnly, setIsReadOnly] = useState(false);
     const [isLoadingCloud, setIsLoadingCloud] = useState(true);
@@ -1186,8 +1186,8 @@ const App = () => {
             const shareId = params.get('share');
             if (shareId && db) {
                 try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await signInWithCustomToken(auth, __initial_auth_token);
+                    if (typeof window !== 'undefined' && window.__initial_auth_token) {
+                        await signInWithCustomToken(auth, window.__initial_auth_token);
                     } else {
                         await signInAnonymously(auth);
                     }
@@ -1216,7 +1216,7 @@ const App = () => {
                         if (data.shots) setShots(data.shots);
                         if (data.assets) setAssets(data.assets);
                         if (data.globalAssets) setGlobalAssets(data.globalAssets);
-                    } catch (e) { console.error("Gagal load localStorage"); }
+                    } catch { console.error("Gagal load localStorage"); }
                 }
             }
             setIsLoadingCloud(false);

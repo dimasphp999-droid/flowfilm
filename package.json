@@ -5,10 +5,10 @@
  "type": "module",
  "homepage": "https://github.com/dimasphp999-droid/flowfilm",
  "scripts": {
-  "dev": "vite",
+  "dev": "vite --host 0.0.0.0 --port 3000",
   "build": "vite build",
   "lint": "eslint .",
-  "preview": "vite preview",
+  "preview": "vite preview --host 0.0.0.0 --port 3000",
   "predeploy": "npm run build",
   "deploy": "gh-pages -d dist"
  },

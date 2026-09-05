@@ -1,0 +1,6 @@
+{
+  "name": "flow_film",
+  "description": "AI Short Film Storyboard Studio for scriptwriting, shotlisting, asset library, and video prompt generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
