@@ -24,8 +24,10 @@ try {
     console.warn("Firebase tidak terkonfigurasi. Fitur Cloud Share akan nonaktif.");
 }
 
-const callGeminiAPI = async (prompt, systemInstruction, schema = null, base64Image = null) => {
-    const apiKey = ""; 
+const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, base64Image = null) => {
+    if (!apiKey) {
+        throw new Error("API Key Gemini belum diatur. Silakan masukkan API Key di tab Dashboard > Pengaturan Proyek.");
+    }
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
     
     const parts = [{ text: prompt }];
@@ -83,12 +85,27 @@ const callGeminiAPI = async (prompt, systemInstruction, schema = null, base64Ima
     }
 };
 
-const extractPdfText = async (fileUrl) => {
+const extractPdfText = async (file) => {
     try {
-        const pdfjsLib = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.mjs');
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.mjs';
+        const arrayBuffer = await file.arrayBuffer();
+        
+        // Load PDF.js via global script injection if not already present
+        if (!window.pdfjsLib) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                script.onload = () => {
+                    window.pdfjsLib = window['pdfjs-dist/build/pdf'];
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                    resolve();
+                };
+                script.onerror = () => reject(new Error("Gagal memuat pustaka PDF.js"));
+                document.head.appendChild(script);
+            });
+        }
 
-        const loadingTask = pdfjsLib.getDocument(fileUrl);
+        const pdfjsLib = window.pdfjsLib;
+        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
         const pdf = await loadingTask.promise;
         let fullText = "";
         
@@ -101,7 +118,7 @@ const extractPdfText = async (fileUrl) => {
         return fullText;
     } catch (err) {
         console.error("Gagal membaca PDF:", err);
-        throw new Error("Gagal membaca teks dari PDF.");
+        throw new Error("Gagal membaca teks dari PDF. Pastikan file PDF tidak terenkripsi.");
     }
 };
 
@@ -186,7 +203,7 @@ const Modal = ({ isOpen, onClose, title, children }) => {
     );
 };
 
-const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
+const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly, apiKey }) => {
     const [isGenerating, setIsGenerating] = useState(false);
     const [isReadingPdf, setIsReadingPdf] = useState(false);
     const [idea, setIdea] = useState({ genre: '', characters: '', situation: '' });
@@ -213,10 +230,10 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
                 required: ["title", "logline", "scriptText"]
             };
 
-            const result = await callGeminiAPI(prompt, systemMsg, schema);
+            const result = await callGeminiAPI(prompt, systemMsg, apiKey, schema);
             setProject({ ...project, title: result.title, logline: result.logline, scriptText: result.scriptText });
         } catch (err) {
-            setErrorMsg("Gagal menghasilkan naskah. Coba lagi.");
+            setErrorMsg(err.message || "Gagal menghasilkan naskah. Coba lagi.");
         }
         setIsGenerating(false);
     };
@@ -225,15 +242,14 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
         const file = e.target.files[0];
         if (!file) return;
 
+        setErrorMsg("");
         if (file.type === "application/pdf") {
             setIsReadingPdf(true);
             try {
-                const url = URL.createObjectURL(file);
-                const text = await extractPdfText(url);
+                const text = await extractPdfText(file);
                 setProject({ ...project, scriptText: text });
-                URL.revokeObjectURL(url);
             } catch (err) {
-                setErrorMsg("Gagal membaca file PDF.");
+                setErrorMsg("Gagal membaca file PDF. Pastikan file PDF valid.");
             }
             setIsReadingPdf(false);
         } else if (file.type === "text/plain") {
@@ -243,6 +259,7 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
         } else {
             setErrorMsg("Format tidak didukung. Gunakan .txt atau .pdf");
         }
+        e.target.value = '';
     };
 
     return (
@@ -280,6 +297,7 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
                             </div>
                         )}
                     </div>
+                    {errorMsg && <div className="text-red-400 text-xs bg-red-900/20 p-2 rounded mb-3">{errorMsg}</div>}
                     <div className="space-y-4 flex-grow flex flex-col">
                         <Input label="Judul Proyek" placeholder="Judul Film..." value={project.title} onChange={e => setProject({...project, title: e.target.value})} readOnly={isReadOnly} />
                         <Textarea label="Logline" placeholder="Ringkasan satu kalimat..." value={project.logline} onChange={e => setProject({...project, logline: e.target.value})} rows={2} readOnly={isReadOnly} />
@@ -306,7 +324,7 @@ const ScriptTab = ({ project, setProject, setActiveTab, isReadOnly }) => {
     );
 };
 
-const ShotlistTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly }) => {
+const ShotlistTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly, apiKey }) => {
     const [isGenerating, setIsGenerating] = useState(false);
     const [errorMsg, setErrorMsg] = useState("");
     const [viewMode, setViewMode] = useState('list');
@@ -338,7 +356,7 @@ const ShotlistTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnl
                 }
             };
 
-            const result = await callGeminiAPI(prompt, systemMsg, schema);
+            const result = await callGeminiAPI(prompt, systemMsg, apiKey, schema);
             
             const newShots = result.map((shot, index) => ({
                 id: Date.now() + index,
@@ -468,7 +486,7 @@ const ShotlistTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnl
     );
 };
 
-const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActiveTab, isReadOnly, showDialog }) => {
+const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActiveTab, isReadOnly, showDialog, apiKey }) => {
     const [newAsset, setNewAsset] = useState({ name: '', type: 'Character', details: '', fileUrl: null });
     const [isDetecting, setIsDetecting] = useState(false);
     const fileInputRef = useRef(null);
@@ -490,11 +508,11 @@ const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActive
         setIsDetecting(true);
         try {
             const prompt = `Analisis gambar ini secara detail. Tuliskan deskripsi visualnya dalam satu paragraf yang sangat spesifik dan deskriptif dalam bahasa Inggris (sangat cocok untuk prompt video generation AI). Fokus pada elemen pakaian, warna, fitur wajah/bentuk, tekstur, gaya, dan material. Jangan beri pengantar/kalimat pembuka, langsung mulai deskripsi padatnya.`;
-            const description = await callGeminiAPI(prompt, "", null, newAsset.fileUrl);
+            const description = await callGeminiAPI(prompt, "", apiKey, null, newAsset.fileUrl);
             setNewAsset({ ...newAsset, details: description });
         } catch (err) {
             console.error(err);
-            showDialog("Gagal mendeteksi gambar otomatis. Pastikan ukuran file sesuai atau coba lagi.");
+            showDialog(err.message || "Gagal mendeteksi gambar otomatis. Pastikan ukuran file sesuai atau coba lagi.");
         }
         setIsDetecting(false);
     };
@@ -660,7 +678,7 @@ const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActive
     );
 };
 
-const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly }) => {
+const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly, apiKey }) => {
     const [loadingId, setLoadingId] = useState(null);
     const [isGeneratingAll, setIsGeneratingAll] = useState(false);
     const [historyModal, setHistoryModal] = useState({ isOpen: false, shotId: null });
@@ -699,7 +717,7 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
             required: ["prompt", "negativePrompt"]
         };
 
-        return await callGeminiAPI(promptText, systemMsg, schema);
+        return await callGeminiAPI(promptText, systemMsg, apiKey, schema);
     };
 
     const generatePromptForShot = async (shot) => {
@@ -922,7 +940,7 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
     );
 };
 
-const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets, isReadOnly, showDialog }) => {
+const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets, isReadOnly, showDialog, apiKey, setApiKey }) => {
     const [isSharing, setIsSharing] = useState(false);
     const [shareUrl, setShareUrl] = useState("");
 
@@ -1075,6 +1093,19 @@ const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets,
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-lg">
                         <h3 className="text-lg font-semibold mb-4 border-b border-zinc-800 pb-2 flex items-center gap-2"><Settings className="w-5 h-5"/> Pengaturan Proyek</h3>
                         <div className="space-y-4">
+                            <div className="mb-4">
+                                <Input 
+                                    label="Gemini API Key" 
+                                    type="password"
+                                    placeholder="Masukkan API Key AIzaSy..." 
+                                    value={apiKey} 
+                                    onChange={e => setApiKey(e.target.value)}
+                                    readOnly={isReadOnly}
+                                />
+                                <p className="text-[10px] text-zinc-500 mt-1">
+                                    Dapatkan API Key gratis di <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">Google AI Studio</a>. Disimpan aman di browser Anda.
+                                </p>
+                            </div>
                             <div className="flex gap-4 items-end">
                                 <div className="flex-grow">
                                     <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Global Aspect Ratio</label>
@@ -1139,6 +1170,7 @@ const App = () => {
     const [shots, setShots] = useState([]);
     const [assets, setAssets] = useState([]);
     const [globalAssets, setGlobalAssets] = useState([]);
+    const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
     
     const [isReadOnly, setIsReadOnly] = useState(false);
     const [isLoadingCloud, setIsLoadingCloud] = useState(true);
@@ -1193,6 +1225,10 @@ const App = () => {
     }, []);
 
     useEffect(() => {
+        localStorage.setItem('gemini_api_key', apiKey);
+    }, [apiKey]);
+
+    useEffect(() => {
         if (!isReadOnly && !isLoadingCloud) {
             const dataToSave = { project, shots, assets, globalAssets };
             localStorage.setItem('storyboard_studio_save', JSON.stringify(dataToSave));
@@ -1243,11 +1279,11 @@ const App = () => {
             </header>
 
             <main className="flex-grow max-w-7xl mx-auto w-full px-4 py-8 relative">
-                {activeTab === 'script' && <ScriptTab project={project} setProject={setProject} setActiveTab={setActiveTab} isReadOnly={isReadOnly} />}
-                {activeTab === 'shotlist' && <ShotlistTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} />}
-                {activeTab === 'assets' && <AssetsTab assets={assets} setAssets={setAssets} globalAssets={globalAssets} setGlobalAssets={setGlobalAssets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} showDialog={showDialog} />}
-                {activeTab === 'prompts' && <PromptsTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} />}
-                {activeTab === 'dashboard' && <DashboardTab project={project} setProject={setProject} shots={shots} setShots={setShots} assets={assets} setAssets={setAssets} isReadOnly={isReadOnly} showDialog={showDialog} />}
+                {activeTab === 'script' && <ScriptTab project={project} setProject={setProject} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
+                {activeTab === 'shotlist' && <ShotlistTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
+                {activeTab === 'assets' && <AssetsTab assets={assets} setAssets={setAssets} globalAssets={globalAssets} setGlobalAssets={setGlobalAssets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} />}
+                {activeTab === 'prompts' && <PromptsTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
+                {activeTab === 'dashboard' && <DashboardTab project={project} setProject={setProject} shots={shots} setShots={setShots} assets={assets} setAssets={setAssets} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} setApiKey={setApiKey} />}
                 
                 <Modal isOpen={!!dialogConfig} onClose={() => setDialogConfig(null)} title={dialogConfig?.type === 'confirm' ? 'Konfirmasi' : 'Pemberitahuan'}>
                     <p className="text-zinc-300 text-sm mb-6">{dialogConfig?.message}</p>
