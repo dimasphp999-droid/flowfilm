@@ -24,13 +24,88 @@ try {
     console.warn("Firebase tidak terkonfigurasi. Fitur Cloud Share akan nonaktif.");
 }
 
+let cachedAvailableModels = null;
+
+const parseJsonSafe = (text) => {
+    let clean = text.replace(/```json/gi, '').replace(/```/gi, '').trim();
+    try {
+        return JSON.parse(clean);
+    } catch {
+        const firstArr = clean.indexOf('[');
+        const lastArr = clean.lastIndexOf(']');
+        if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {
+            return JSON.parse(clean.substring(firstArr, lastArr + 1));
+        }
+        const firstObj = clean.indexOf('{');
+        const lastObj = clean.lastIndexOf('}');
+        if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {
+            return JSON.parse(clean.substring(firstObj, lastObj + 1));
+        }
+        throw new Error("Gagal mengurai format data dari AI.");
+    }
+};
+
+const getSupportedModels = async (cleanKey) => {
+    if (cachedAvailableModels && cachedAvailableModels.length > 0) {
+        return cachedAvailableModels;
+    }
+
+    try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`);
+        const data = await res.json();
+        
+        if (data.error) {
+            const msg = data.error.message || '';
+            if (data.error.code === 400 || msg.toLowerCase().includes('api key')) {
+                throw new Error(`API Key tidak valid atau Generative Language API belum aktif: ${msg}`);
+            }
+        } else if (data.models && Array.isArray(data.models)) {
+            const available = data.models
+                .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.some(method => method.toLowerCase().includes('generatecontent')))
+                .map(m => m.name.replace(/^models\//, ''));
+
+            if (available.length > 0) {
+                // Urutkan prioritas: Flash modern -> Flash lainnya -> Pro modern -> model lainnya
+                available.sort((a, b) => {
+                    const score = (name) => {
+                        const n = name.toLowerCase();
+                        if (n.includes('2.5-flash')) return 100;
+                        if (n.includes('flash-latest')) return 95;
+                        if (n.includes('2.0-flash')) return 90;
+                        if (n.includes('flash-lite')) return 85;
+                        if (n.includes('flash')) return 80;
+                        if (n.includes('2.5-pro')) return 70;
+                        if (n.includes('pro')) return 50;
+                        return 10;
+                    };
+                    return score(b) - score(a);
+                });
+                cachedAvailableModels = available;
+                return available;
+            }
+        }
+    } catch (err) {
+        if (err.message && err.message.includes('API Key')) throw err;
+        console.warn("Gagal auto-discover model via ListModels, menggunakan daftar fallback:", err);
+    }
+
+    return [
+        'gemini-2.5-flash',
+        'gemini-flash-latest',
+        'gemini-2.0-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.5-pro',
+        'gemini-pro'
+    ];
+};
+
 const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, base64Image = null) => {
     if (!apiKey) {
         throw new Error("API Key Gemini belum diatur. Silakan masukkan API Key di tab Dashboard > Pengaturan Proyek.");
     }
     const cleanKey = apiKey.trim();
     
-    const parts = [{ text: prompt }];
+    let parts = [{ text: prompt }];
     
     if (base64Image) {
         const match = base64Image.match(/^data:(image\/[a-zA-Z]*);base64,([^"]*)$/);
@@ -44,68 +119,82 @@ const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, b
         }
     }
 
-    const payload = {
-        contents: [{ role: "user", parts: parts }],
-        generationConfig: {}
-    };
-
-    if (systemInstruction) {
-        payload.systemInstruction = { parts: [{ text: systemInstruction }] };
-    }
-
-    if (schema) {
-        payload.generationConfig.responseMimeType = "application/json";
-        payload.generationConfig.responseSchema = schema;
-    }
-
-    const modelsToTry = [
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash'
-    ];
-
+    const modelsToTry = await getSupportedModels(cleanKey);
     let lastError = null;
 
     for (const modelName of modelsToTry) {
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${cleanKey}`;
+        
+        // Coba pertama dengan structured output jika ada schema
+        const payload = {
+            contents: [{ role: "user", parts: parts }],
+            generationConfig: {}
+        };
+
+        if (systemInstruction) {
+            payload.systemInstruction = { parts: [{ text: systemInstruction }] };
+        }
+
+        if (schema) {
+            payload.generationConfig.responseMimeType = "application/json";
+            payload.generationConfig.responseSchema = schema;
+        }
+
         try {
-            const response = await fetch(apiUrl, {
+            let response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            const result = await response.json();
+            let result = await response.json();
             
+            // Jika gagal karena schema tidak didukung oleh model tertentu, coba fallback prompt JSON biasa
+            if (result.error && schema && (result.error.code === 400 || result.error.message?.toLowerCase().includes('schema'))) {
+                const fallbackParts = [
+                    { text: `${prompt}\n\nPENTING: Kembalikan hasil HANYA dalam format JSON valid tanpa format markdown tambahan, sesuai spesifikasi berikut:\n${JSON.stringify(schema)}` }
+                ];
+                const fallbackPayload = {
+                    contents: [{ role: "user", parts: fallbackParts }],
+                    generationConfig: { responseMimeType: "application/json" }
+                };
+                if (systemInstruction) {
+                    fallbackPayload.systemInstruction = { parts: [{ text: systemInstruction }] };
+                }
+                response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(fallbackPayload)
+                });
+                result = await response.json();
+            }
+
             if (result.error) {
                 const errMsg = result.error.message || '';
-                // If model not found / 404, fall back to next model
-                if (result.error.code === 404 || errMsg.toLowerCase().includes('not found')) {
+                if (result.error.code === 404 || errMsg.toLowerCase().includes('not found') || errMsg.toLowerCase().includes('not supported')) {
                     lastError = new Error(errMsg);
-                    continue;
+                    continue; // Coba model berikutnya
                 }
                 throw new Error(errMsg);
             }
 
-            if (result.candidates && result.candidates.length > 0) {
+            if (result.candidates && result.candidates.length > 0 && result.candidates[0].content?.parts?.length > 0) {
                 const textResponse = result.candidates[0].content.parts[0].text;
                 if (schema) {
-                    let cleanJsonText = textResponse.replace(/```json/gi, '').replace(/```/gi, '').trim();
-                    return JSON.parse(cleanJsonText);
+                    return parseJsonSafe(textResponse);
                 }
                 return textResponse;
             }
-            throw new Error("Respon tidak valid dari AI");
+            throw new Error("Respon kosong atau tidak valid dari AI.");
         } catch (error) {
             lastError = error;
-            if (error.message && error.message.toLowerCase().includes('not found')) {
+            if (error.message && (error.message.toLowerCase().includes('not found') || error.message.toLowerCase().includes('not supported'))) {
                 continue;
             }
             throw error;
         }
     }
 
-    throw lastError || new Error("Gagal menghubungi Google Gemini API.");
+    throw lastError || new Error("Gagal memanggil model Google Gemini yang tersedia.");
 };
 
 const extractPdfText = async (file) => {
