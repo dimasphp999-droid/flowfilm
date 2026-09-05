@@ -28,7 +28,7 @@ const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, b
     if (!apiKey) {
         throw new Error("API Key Gemini belum diatur. Silakan masukkan API Key di tab Dashboard > Pengaturan Proyek.");
     }
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`;
+    const cleanKey = apiKey.trim();
     
     const parts = [{ text: prompt }];
     
@@ -58,31 +58,54 @@ const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, b
         payload.generationConfig.responseSchema = schema;
     }
 
-    try {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const result = await response.json();
-        
-        if (result.error) {
-            throw new Error(result.error.message);
-        }
+    const modelsToTry = [
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash'
+    ];
 
-        if (result.candidates && result.candidates.length > 0) {
-            const textResponse = result.candidates[0].content.parts[0].text;
-            if (schema) {
-                let cleanJsonText = textResponse.replace(/```json/gi, '').replace(/```/gi, '').trim();
-                return JSON.parse(cleanJsonText);
+    let lastError = null;
+
+    for (const modelName of modelsToTry) {
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${cleanKey}`;
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            
+            if (result.error) {
+                const errMsg = result.error.message || '';
+                // If model not found / 404, fall back to next model
+                if (result.error.code === 404 || errMsg.toLowerCase().includes('not found')) {
+                    lastError = new Error(errMsg);
+                    continue;
+                }
+                throw new Error(errMsg);
             }
-            return textResponse;
+
+            if (result.candidates && result.candidates.length > 0) {
+                const textResponse = result.candidates[0].content.parts[0].text;
+                if (schema) {
+                    let cleanJsonText = textResponse.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                    return JSON.parse(cleanJsonText);
+                }
+                return textResponse;
+            }
+            throw new Error("Respon tidak valid dari AI");
+        } catch (error) {
+            lastError = error;
+            if (error.message && error.message.toLowerCase().includes('not found')) {
+                continue;
+            }
+            throw error;
         }
-        throw new Error("Respon tidak valid dari AI");
-    } catch (error) {
-        console.error("API Error:", error);
-        throw error;
     }
+
+    throw lastError || new Error("Gagal menghubungi Google Gemini API.");
 };
 
 const extractPdfText = async (file) => {
