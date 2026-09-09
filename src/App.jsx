@@ -3,7 +3,7 @@ import {
     Sparkles, Wand2, FileText, ChevronRight, ChevronLeft, 
     Upload, List, Grid, Trash2, Plus, Film, FolderOpen, 
     Images, Box, Copy, Terminal, AlertCircle, History, 
-    Save, Check, ChartPie, CheckCircle, RefreshCw, 
+    Save, Check, ChartPie, CheckCircle, RefreshCw, Camera,
     Download, Printer, Share2, Lock, Loader2, PenTool,
     Settings, Eye
 } from 'lucide-react';
@@ -782,6 +782,268 @@ const AssetsTab = ({ assets, setAssets, globalAssets, setGlobalAssets, setActive
                 <Button onClick={() => setActiveTab('shotlist')} variant="ghost">
                     <ChevronLeft className="w-4 h-4 mr-1" /> Kembali ke Shotlist
                 </Button>
+                <Button onClick={() => setActiveTab('initial_shot')} variant="primary">
+                    Lanjut ke Shot Awal <ChevronRight className="w-4 h-4 ml-1" />
+                </Button>
+            </div>
+        </div>
+    );
+};
+
+const InitialShotTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly, apiKey, showDialog }) => {
+    const [loadingId, setLoadingId] = useState(null);
+    const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+    const [copiedId, setCopiedId] = useState(null);
+    const [selectedModels, setSelectedModels] = useState({});
+
+    const processGenerateInitialShot = async (shot, targetModel = 'Midjourney') => {
+        const selectedAssetsDetails = assets
+            .filter(a => shot.selectedAssets?.includes(a.id))
+            .map(a => `${a.type} "${a.name}": ${a.details}`)
+            .join(" | ");
+
+        const visualStyle = project.visualStyle ? `Visual Style/Mood: ${project.visualStyle}\n` : '';
+        const aspectRatio = `Aspect Ratio: ${shot.aspectRatio || project.globalAspectRatio || '16:9'}`;
+
+        const promptText = `Buatkan STILL IMAGE GENERATION PROMPT (Shot Awal / First Frame / Opening Frame) untuk adegan film ini:
+Aksi/Adegan: ${shot.action}
+Framing & Komposisi: ${shot.framing}
+Sudut Kamera (Angle): ${shot.angle}
+Pencahayaan & Suasana: ${shot.lighting}
+Target AI Image Generator: ${targetModel}
+Aset Visual Terkait (Karakter/Lokasi/Properti): ${selectedAssetsDetails || 'Tidak ada aset khusus.'}
+${visualStyle}${aspectRatio}
+
+Instruksi Khusus:
+1. Buat prompt deskripsi gambar still (frame awal adegan) yang sangat sinematik, fotorealistik/sesuai mood film, dengan detail visual subjek, tekstur, framing, dan ekspresi.
+2. Gunakan bahasa Inggris yang deskriptif dan padat (cocok untuk prompt Midjourney/Flux/Ideogram/SDXL).
+3. Sertakan parameter rasio aspek di ujung prompt (misal: --ar 16:9 untuk Midjourney).
+4. Sediakan juga negative prompt yang relevan.`;
+
+        const systemMsg = `Kamu adalah Director of Photography (DP) dan Concept Artist AI profesional. Tugasmu menghasilkan prompt still image / shot awal (first frame) berkualitas tinggi untuk generator gambar AI seperti Midjourney, Flux, Ideogram, atau Stable Diffusion.`;
+
+        const schema = {
+            type: "OBJECT",
+            properties: {
+                prompt: { type: "STRING", description: "Prompt gambar still/shot awal bahasa Inggris siap pakai" },
+                negativePrompt: { type: "STRING", description: "Negative prompt untuk gambar still" }
+            },
+            required: ["prompt", "negativePrompt"]
+        };
+
+        return await callGeminiAPI(promptText, systemMsg, apiKey, schema);
+    };
+
+    const generateInitialShot = async (shot) => {
+        if (isReadOnly) return;
+        setLoadingId(shot.id);
+        const targetModel = selectedModels[shot.id] || 'Midjourney';
+        try {
+            const result = await processGenerateInitialShot(shot, targetModel);
+            setShots(shots.map(s => s.id === shot.id ? {
+                ...s,
+                initialShotPrompt: result.prompt,
+                initialShotNegative: result.negativePrompt
+            } : s));
+        } catch (err) {
+            console.error("Gagal generate prompt shot awal", err);
+            if (showDialog) showDialog("Gagal membuat prompt shot awal: " + err.message);
+        }
+        setLoadingId(null);
+    };
+
+    const generateAllMissing = async () => {
+        if (isReadOnly) return;
+        setIsGeneratingAll(true);
+        const missing = shots.filter(s => !s.initialShotPrompt);
+        for (const shot of missing) {
+            await generateInitialShot(shot);
+        }
+        setIsGeneratingAll(false);
+    };
+
+    const copyAllInitialPrompts = () => {
+        const allText = shots.map((s, i) => `Shot ${i+1} (${s.action}):\nPrompt: ${s.initialShotPrompt || '(Belum dibuat)'}\nNegative: ${s.initialShotNegative || '-'}\n`).join("\n");
+        navigator.clipboard.writeText(allText);
+    };
+
+    const copyPrompt = (id, text) => {
+        navigator.clipboard.writeText(text);
+        setCopiedId(id);
+        setTimeout(() => setCopiedId(null), 2000);
+    };
+
+    const updateShotPrompt = (id, field, value) => {
+        if (isReadOnly) return;
+        setShots(shots.map(s => s.id === id ? { ...s, [field]: value } : s));
+    };
+
+    const handleImageUpload = (id, e) => {
+        if (isReadOnly) return;
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            setShots(shots.map(s => s.id === id ? { ...s, initialShotImage: ev.target.result } : s));
+        };
+        reader.readAsDataURL(file);
+    };
+
+    return (
+        <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-zinc-900 p-5 rounded-xl border border-zinc-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <span className="p-2 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                            <Camera className="w-5 h-5" />
+                        </span>
+                        <div>
+                            <h2 className="text-xl font-semibold text-white">Shot Awal (First Frame Image Prompt)</h2>
+                            <p className="text-sm text-zinc-400">Generate prompt gambar still frame pembuka adegan untuk Midjourney, FLUX, Ideogram, atau SDXL.</p>
+                        </div>
+                    </div>
+                </div>
+                {!isReadOnly && (
+                    <div className="flex flex-wrap gap-2">
+                        <Button onClick={copyAllInitialPrompts} variant="secondary" icon={Copy} className="text-xs h-9">
+                            Salin Semua Prompt
+                        </Button>
+                        <Button onClick={generateAllMissing} loading={isGeneratingAll} icon={Sparkles} className="text-xs h-9">
+                            {isGeneratingAll ? 'Memproses...' : 'Buat Semua Prompt Kosong'}
+                        </Button>
+                    </div>
+                )}
+            </div>
+
+            {shots.length === 0 ? (
+                <div className="text-center py-16 text-zinc-500 bg-zinc-900/50 rounded-xl border border-dashed border-zinc-700">
+                    <Camera className="w-10 h-10 mx-auto mb-3 opacity-50" />
+                    <p>Shotlist masih kosong. Silakan buat shot di menu Shotlist terlebih dahulu.</p>
+                </div>
+            ) : (
+                shots.map((shot, idx) => {
+                    const activeModel = selectedModels[shot.id] || 'Midjourney';
+                    return (
+                        <div key={shot.id} className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl p-5 shadow-md flex flex-col gap-4 transition-all">
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
+                                <div className="flex items-center gap-3">
+                                    <span className="text-lg font-bold text-indigo-400 bg-indigo-950/60 px-2.5 py-0.5 rounded-md border border-indigo-800/50">
+                                        Shot #{idx + 1}
+                                    </span>
+                                    <div>
+                                        <p className="font-semibold text-white text-sm">{shot.action}</p>
+                                        <p className="text-xs text-zinc-400">
+                                            <span className="text-zinc-500">Framing:</span> {shot.framing} • <span className="text-zinc-500">Angle:</span> {shot.angle} • <span className="text-zinc-500">Lighting:</span> {shot.lighting}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2 self-end md:self-auto">
+                                    <select
+                                        value={activeModel}
+                                        onChange={(e) => setSelectedModels({ ...selectedModels, [shot.id]: e.target.value })}
+                                        disabled={isReadOnly}
+                                        className="bg-zinc-800 border border-zinc-700 rounded text-xs px-2.5 py-1.5 text-zinc-200 outline-none focus:border-indigo-500"
+                                    >
+                                        <option value="Midjourney">Preset: Midjourney v6</option>
+                                        <option value="FLUX.1">Preset: FLUX.1</option>
+                                        <option value="Ideogram">Preset: Ideogram v2</option>
+                                        <option value="SDXL">Preset: Stable Diffusion XL</option>
+                                    </select>
+                                    {!isReadOnly && (
+                                        <Button
+                                            onClick={() => generateInitialShot(shot)}
+                                            loading={loadingId === shot.id}
+                                            icon={Wand2}
+                                            className="text-xs h-8"
+                                        >
+                                            {shot.initialShotPrompt ? 'Regenerate' : 'Generate Shot Awal'}
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
+                                <div className="md:col-span-8 flex flex-col gap-3">
+                                    <div>
+                                        <div className="flex justify-between items-center mb-1.5">
+                                            <label className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                                                <Camera className="w-3.5 h-3.5 text-indigo-400" />
+                                                Prompt Gambar Shot Awal (First Frame)
+                                            </label>
+                                            {shot.initialShotPrompt && (
+                                                <button
+                                                    onClick={() => copyPrompt(shot.id, shot.initialShotPrompt)}
+                                                    className="text-xs text-zinc-400 hover:text-white flex items-center gap-1 bg-zinc-800/80 px-2 py-0.5 rounded border border-zinc-700 transition-colors"
+                                                >
+                                                    {copiedId === shot.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                                    {copiedId === shot.id ? 'Tersalin!' : 'Salin'}
+                                                </button>
+                                            )}
+                                        </div>
+                                        <textarea
+                                            value={shot.initialShotPrompt || ''}
+                                            onChange={(e) => updateShotPrompt(shot.id, 'initialShotPrompt', e.target.value)}
+                                            readOnly={isReadOnly}
+                                            placeholder="Klik 'Generate Shot Awal' untuk membuat prompt gambar still frame pertama dari adegan ini..."
+                                            rows={3}
+                                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-indigo-500 resize-y font-mono leading-relaxed"
+                                        />
+                                    </div>
+
+                                    {shot.initialShotNegative !== undefined && (
+                                        <div>
+                                            <label className="text-xs font-semibold text-zinc-400 block mb-1">Negative Prompt (Opsional)</label>
+                                            <input
+                                                type="text"
+                                                value={shot.initialShotNegative || ''}
+                                                onChange={(e) => updateShotPrompt(shot.id, 'initialShotNegative', e.target.value)}
+                                                readOnly={isReadOnly}
+                                                placeholder="blurry, distorted, bad anatomy, text, watermark..."
+                                                className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-400 focus:outline-none focus:border-indigo-500 font-mono"
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="md:col-span-4 flex flex-col justify-between bg-zinc-950/60 border border-zinc-800/80 rounded-lg p-3">
+                                    <div>
+                                        <span className="text-[11px] font-semibold text-zinc-400 block mb-2">Preview / Hasil Gambar Still:</span>
+                                        {shot.initialShotImage ? (
+                                            <div className="relative group rounded-lg overflow-hidden border border-zinc-700 aspect-video bg-black flex items-center justify-center">
+                                                <img src={shot.initialShotImage} alt={`Shot ${idx+1}`} className="w-full h-full object-cover" />
+                                                {!isReadOnly && (
+                                                    <button
+                                                        onClick={() => updateShotPrompt(shot.id, 'initialShotImage', null)}
+                                                        className="absolute top-1 right-1 bg-black/70 hover:bg-rose-900/80 text-white p-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                                                        title="Hapus gambar"
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <label className="flex flex-col items-center justify-center border border-dashed border-zinc-800 hover:border-zinc-700 rounded-lg aspect-video cursor-pointer text-zinc-500 hover:text-zinc-300 transition-colors p-3 text-center">
+                                                <Upload className="w-5 h-5 mb-1 opacity-60" />
+                                                <span className="text-[11px]">Upload hasil generate gambar still</span>
+                                                <span className="text-[9px] text-zinc-600">Opsional untuk referensi I2V</span>
+                                                <input type="file" accept="image/*" onChange={(e) => handleImageUpload(shot.id, e)} className="hidden" disabled={isReadOnly} />
+                                            </label>
+                                        )}
+                                    </div>
+                                    <div className="mt-2 text-[10px] text-zinc-500">
+                                        💡 Prompt ini dipakai untuk membuat gambar frame 0 (start frame) di AI image generator sebelum dimasukkan ke generator video.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })
+            )}
+
+            <div className="flex justify-between pt-4 border-t border-zinc-800">
+                <Button onClick={() => setActiveTab('assets')} variant="ghost">
+                    <ChevronLeft className="w-4 h-4 mr-1" /> Kembali ke Asset Library
+                </Button>
                 <Button onClick={() => setActiveTab('prompts')} variant="primary">
                     Lanjut ke Video Prompt <ChevronRight className="w-4 h-4 ml-1" />
                 </Button>
@@ -815,8 +1077,9 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
 
         const visualStyle = project.visualStyle ? `Visual Style/Mood: ${project.visualStyle}\n` : '';
         const aspectRatio = `Aspect Ratio: ${shot.aspectRatio || project.globalAspectRatio || '16:9'}`;
+        const i2vContext = shot.initialShotImage || shot.initialShotPrompt ? `Konteks Input: Adegan ini menggunakan gambar still / shot awal sebagai first frame (Image-to-Video). Fokuskan prompt video pada pergerakan kamera dinamis, motion subjek, dan transisi aksi dari frame awal tersebut.\n` : '';
 
-        const promptText = `Buatkan video generation prompt untuk shot ini:\nAksi: ${shot.action}\nFraming: ${shot.framing}\nAngle: ${shot.angle}\nLighting/Atmosfer: ${shot.lighting}\n\nAset Visual yang harus dimasukkan: ${selectedAssetsDetails ? selectedAssetsDetails : 'Tidak ada aset khusus.'}\n${visualStyle}${aspectRatio}`;
+        const promptText = `Buatkan video generation prompt untuk shot ini:\nAksi: ${shot.action}\nFraming: ${shot.framing}\nAngle: ${shot.angle}\nLighting/Atmosfer: ${shot.lighting}\n\nAset Visual yang harus dimasukkan: ${selectedAssetsDetails ? selectedAssetsDetails : 'Tidak ada aset khusus.'}\n${visualStyle}${aspectRatio}\n${i2vContext}`;
         
         const systemMsg = `Kamu adalah Prompt Engineer Ahli untuk Model AI Video. Tugasmu: Gabungkan deskripsi shot, style, dan detail aset menjadi SATU prompt video bahasa Inggris yang deskriptif, terstruktur, sinematik. Gunakan format kamera yang profesional. Sertakan perintah rasio aspek di ujung prompt (misal: --ar 16:9). Hasilkan juga Negative Prompt.`;
 
@@ -895,6 +1158,22 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
     const updateShotRatio = (id, ratio) => {
         if(isReadOnly) return;
         setShots(shots.map(s => s.id === id ? { ...s, aspectRatio: ratio } : s));
+    };
+
+    const handleInitialShotUpload = (id, e) => {
+        if (isReadOnly) return;
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            setShots(shots.map(s => s.id === id ? { ...s, initialShotImage: ev.target.result } : s));
+        };
+        reader.readAsDataURL(file);
+    };
+
+    const removeInitialShotImage = (id) => {
+        if (isReadOnly) return;
+        setShots(shots.map(s => s.id === id ? { ...s, initialShotImage: null } : s));
     };
 
     return (
@@ -976,15 +1255,101 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
                                 </div>
                             </div>
 
-                            <div className="flex flex-col md:flex-row gap-4 mt-2">
-                                {!isReadOnly && (
-                                    <div className="md:w-1/4">
-                                        <Button onClick={() => generatePromptForShot(shot)} loading={loadingId === shot.id} icon={Wand2} className="w-full text-xs py-3 h-full">
-                                            {shot.videoPrompt ? 'Regenerate' : 'Buat Prompt Video'}
-                                        </Button>
+                            <div className="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
+                                <div className="md:col-span-4 flex flex-col gap-3">
+                                    {/* Upload / Pratinjau Gambar Shot Awal */}
+                                    <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-800 flex flex-col justify-between">
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
+                                                <Camera className="w-3.5 h-3.5 text-indigo-400" />
+                                                Gambar Shot Awal
+                                            </span>
+                                            {shot.initialShotImage && (
+                                                <span className="text-[10px] bg-emerald-950 text-emerald-300 font-semibold px-2 py-0.5 rounded border border-emerald-800">
+                                                    First Frame Siap
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        {shot.initialShotImage ? (
+                                            <div className="space-y-2">
+                                                <div className="relative group rounded-lg overflow-hidden border border-zinc-700 aspect-video bg-black flex items-center justify-center">
+                                                    <img src={shot.initialShotImage} alt={`Shot Awal #${idx+1}`} className="w-full h-full object-cover" />
+                                                    {!isReadOnly && (
+                                                        <div className="absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2 transition-opacity">
+                                                            <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-2.5 py-1.5 rounded flex items-center gap-1 shadow">
+                                                                <Upload className="w-3.5 h-3.5" /> Ganti
+                                                                <input type="file" accept="image/*" onChange={(e) => handleInitialShotUpload(shot.id, e)} className="hidden" />
+                                                            </label>
+                                                            <button
+                                                                onClick={() => removeInitialShotImage(shot.id)}
+                                                                className="bg-rose-700/80 hover:bg-rose-600 text-white text-xs px-2.5 py-1.5 rounded flex items-center gap-1 shadow"
+                                                                title="Hapus gambar"
+                                                            >
+                                                                <Trash2 className="w-3.5 h-3.5" /> Hapus
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <div className="flex justify-between items-center text-[10px] text-zinc-400">
+                                                    <span>Tersimpan untuk Image-to-Video</span>
+                                                    {!isReadOnly && (
+                                                        <label className="cursor-pointer text-indigo-400 hover:text-indigo-300 underline">
+                                                            Upload baru
+                                                            <input type="file" accept="image/*" onChange={(e) => handleInitialShotUpload(shot.id, e)} className="hidden" />
+                                                        </label>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {!isReadOnly ? (
+                                                    <label className="flex flex-col items-center justify-center border-2 border-dashed border-zinc-800 hover:border-indigo-500 bg-zinc-900/40 hover:bg-indigo-950/20 rounded-lg aspect-video cursor-pointer text-zinc-400 hover:text-indigo-200 transition-all p-3 text-center group">
+                                                        <div className="w-8 h-8 rounded-full bg-zinc-800 group-hover:bg-indigo-600/30 flex items-center justify-center mb-1.5 transition-colors">
+                                                            <Upload className="w-4 h-4 text-indigo-400 group-hover:scale-110 transition-transform" />
+                                                        </div>
+                                                        <span className="text-xs font-medium text-zinc-200 group-hover:text-white">Upload Gambar Shot Awal</span>
+                                                        <span className="text-[10px] text-zinc-500 mt-0.5">JPG / PNG / WebP (First Frame)</span>
+                                                        <input type="file" accept="image/*" onChange={(e) => handleInitialShotUpload(shot.id, e)} className="hidden" />
+                                                    </label>
+                                                ) : (
+                                                    <div className="border border-zinc-800 rounded-lg aspect-video flex items-center justify-center text-xs text-zinc-600">
+                                                        Belum ada gambar shot awal
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
-                                )}
-                                <div className={`md:w-3/4 space-y-3 ${isReadOnly ? 'w-full' : ''}`}>
+
+                                    {!isReadOnly && (
+                                        <Button 
+                                            onClick={() => generatePromptForShot(shot)} 
+                                            loading={loadingId === shot.id} 
+                                            icon={Wand2} 
+                                            className="w-full text-xs py-2.5"
+                                        >
+                                            {shot.videoPrompt ? 'Regenerate Prompt Video' : 'Buat Prompt Video'}
+                                        </Button>
+                                    )}
+                                </div>
+
+                                <div className={`md:col-span-8 space-y-3 ${isReadOnly ? 'w-full' : ''}`}>
+                                    {shot.initialShotPrompt && (
+                                        <div className="bg-zinc-950 p-2.5 rounded-lg border border-indigo-900/40 text-xs flex items-start gap-2">
+                                            <Camera className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                                            <div className="flex-grow min-w-0">
+                                                <span className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block">Shot Awal (Prompt Gambar Still):</span>
+                                                <p className="text-zinc-300 font-mono text-[11px] truncate">{shot.initialShotPrompt}</p>
+                                            </div>
+                                            <button
+                                                onClick={() => navigator.clipboard.writeText(shot.initialShotPrompt)}
+                                                className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded border border-zinc-700 shrink-0"
+                                                title="Salin Prompt Shot Awal"
+                                            >
+                                                Salin
+                                            </button>
+                                        </div>
+                                    )}
                                     <div className="relative">
                                         <Textarea 
                                             label="Prompt Utama" 
@@ -1041,8 +1406,8 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
             </Modal>
             
             <div className="flex justify-between pt-4 border-t border-zinc-800">
-                <Button onClick={() => setActiveTab('assets')} variant="ghost">
-                    <ChevronLeft className="w-4 h-4 mr-1" /> Kembali ke Library Aset
+                <Button onClick={() => setActiveTab('initial_shot')} variant="ghost">
+                    <ChevronLeft className="w-4 h-4 mr-1" /> Kembali ke Shot Awal
                 </Button>
                 <Button onClick={() => setActiveTab('dashboard')} variant="primary">
                     Selesai & Lihat Dashboard <ChevronRight className="w-4 h-4 ml-1" />
@@ -1351,8 +1716,9 @@ const App = () => {
         { id: 'script', label: '1. Script', icon: FileText },
         { id: 'shotlist', label: '2. Shotlist', icon: List },
         { id: 'assets', label: '3. Asset Library', icon: Images },
-        { id: 'prompts', label: '4. Video Prompt', icon: Terminal },
-        { id: 'dashboard', label: '5. Dashboard', icon: ChartPie }
+        { id: 'initial_shot', label: '4. Shot Awal', icon: Camera },
+        { id: 'prompts', label: '5. Video Prompt', icon: Terminal },
+        { id: 'dashboard', label: '6. Dashboard', icon: ChartPie }
     ];
 
     if (isLoadingCloud) {
@@ -1394,6 +1760,7 @@ const App = () => {
                 {activeTab === 'script' && <ScriptTab project={project} setProject={setProject} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
                 {activeTab === 'shotlist' && <ShotlistTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
                 {activeTab === 'assets' && <AssetsTab assets={assets} setAssets={setAssets} globalAssets={globalAssets} setGlobalAssets={setGlobalAssets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} />}
+                {activeTab === 'initial_shot' && <InitialShotTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} showDialog={showDialog} />}
                 {activeTab === 'prompts' && <PromptsTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
                 {activeTab === 'dashboard' && <DashboardTab project={project} setProject={setProject} shots={shots} setShots={setShots} assets={assets} setAssets={setAssets} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} setApiKey={setApiKey} />}
                 
