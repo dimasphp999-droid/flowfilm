@@ -65,17 +65,17 @@ const getSupportedModels = async (cleanKey) => {
                 .map(m => m.name.replace(/^models\//, ''));
 
             if (available.length > 0) {
-                // Urutkan prioritas: Flash modern -> Flash lainnya -> Pro modern -> model lainnya
+                // Urutkan prioritas: Flash 2.5 / Flash modern -> Flash latest -> Flash 2.0 -> Flash lainnya -> Pro
                 available.sort((a, b) => {
                     const score = (name) => {
                         const n = name.toLowerCase();
-                        if (n.includes('2.5-flash')) return 100;
-                        if (n.includes('flash-latest')) return 95;
-                        if (n.includes('2.0-flash')) return 90;
-                        if (n.includes('flash-lite')) return 85;
-                        if (n.includes('flash')) return 80;
-                        if (n.includes('2.5-pro')) return 70;
-                        if (n.includes('pro')) return 50;
+                        if (n.includes('2.5-flash')) return 120;
+                        if (n.includes('flash-latest')) return 110;
+                        if (n.includes('2.0-flash')) return 100;
+                        if (n.includes('2.5-flash-lite')) return 95;
+                        if (n.includes('flash')) return 90;
+                        if (n.includes('2.5-pro')) return 80;
+                        if (n.includes('pro')) return 60;
                         return 10;
                     };
                     return score(b) - score(a);
@@ -99,7 +99,7 @@ const getSupportedModels = async (cleanKey) => {
     ];
 };
 
-const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, base64Image = null) => {
+const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, base64Image = null, preferredModel = null) => {
     if (!apiKey) {
         throw new Error("API Key Gemini belum diatur. Silakan masukkan API Key di tab Dashboard > Pengaturan Proyek.");
     }
@@ -119,7 +119,17 @@ const callGeminiAPI = async (prompt, systemInstruction, apiKey, schema = null, b
         }
     }
 
-    const modelsToTry = await getSupportedModels(cleanKey);
+    const savedModel = preferredModel || localStorage.getItem('gemini_model') || 'gemini-2.5-flash';
+    let cleanPreferred = savedModel.replace(/^models\//, '').trim();
+    if (cleanPreferred.startsWith('-')) {
+        cleanPreferred = 'gemini' + cleanPreferred;
+    }
+
+    const supported = await getSupportedModels(cleanKey);
+    const modelsToTry = [
+        cleanPreferred,
+        ...supported.filter(m => m !== cleanPreferred)
+    ];
     let lastError = null;
 
     for (const modelName of modelsToTry) {
@@ -1417,7 +1427,7 @@ const PromptsTab = ({ project, shots, setShots, assets, setActiveTab, isReadOnly
     );
 };
 
-const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets, isReadOnly, showDialog, apiKey, setApiKey }) => {
+const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets, isReadOnly, showDialog, apiKey, setApiKey, selectedModel, setSelectedModel }) => {
     const [isSharing, setIsSharing] = useState(false);
     const [shareUrl, setShareUrl] = useState("");
 
@@ -1583,6 +1593,25 @@ const DashboardTab = ({ project, setProject, shots, setShots, assets, setAssets,
                                     Dapatkan API Key gratis di <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">Google AI Studio</a>. Disimpan aman di browser Anda.
                                 </p>
                             </div>
+                            <div className="mb-4">
+                                <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1">
+                                    Model Gemini AI (Versi Terbaru)
+                                </label>
+                                <select 
+                                    value={selectedModel} 
+                                    onChange={e => setSelectedModel(e.target.value)}
+                                    className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm text-white"
+                                    disabled={isReadOnly}
+                                >
+                                    <option value="gemini-2.5-flash">gemini-2.5-flash (Terbaru, Cepat & Cerdas - Rekomendasi)</option>
+                                    <option value="gemini-flash-latest">gemini-flash-latest (Auto-update ke Flash Terkini)</option>
+                                    <option value="gemini-2.0-flash">gemini-2.0-flash (Flash v2 Stabil)</option>
+                                    <option value="gemini-2.5-pro">gemini-2.5-pro (Penalaran & Logline Kompleks)</option>
+                                </select>
+                                <p className="text-[10px] text-zinc-500 mt-1">
+                                    Menggunakan endpoint resmi: <code className="text-indigo-300">models/{selectedModel}:generateContent</code>
+                                </p>
+                            </div>
                             <div className="flex gap-4 items-end">
                                 <div className="flex-grow">
                                     <label className="text-xs font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Global Aspect Ratio</label>
@@ -1648,6 +1677,7 @@ const App = () => {
     const [assets, setAssets] = useState([]);
     const [globalAssets, setGlobalAssets] = useState([]);
     const [apiKey, setApiKey] = useState(localStorage.getItem('gemini_api_key') || (import.meta.env.VITE_GEMINI_API_KEY || ''));
+    const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('gemini_model') || 'gemini-2.5-flash');
     
     const [isReadOnly, setIsReadOnly] = useState(false);
     const [isLoadingCloud, setIsLoadingCloud] = useState(true);
@@ -1706,6 +1736,10 @@ const App = () => {
     }, [apiKey]);
 
     useEffect(() => {
+        localStorage.setItem('gemini_model', selectedModel);
+    }, [selectedModel]);
+
+    useEffect(() => {
         if (!isReadOnly && !isLoadingCloud) {
             const dataToSave = { project, shots, assets, globalAssets };
             localStorage.setItem('storyboard_studio_save', JSON.stringify(dataToSave));
@@ -1762,7 +1796,7 @@ const App = () => {
                 {activeTab === 'assets' && <AssetsTab assets={assets} setAssets={setAssets} globalAssets={globalAssets} setGlobalAssets={setGlobalAssets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} />}
                 {activeTab === 'initial_shot' && <InitialShotTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} showDialog={showDialog} />}
                 {activeTab === 'prompts' && <PromptsTab project={project} shots={shots} setShots={setShots} assets={assets} setActiveTab={setActiveTab} isReadOnly={isReadOnly} apiKey={apiKey} />}
-                {activeTab === 'dashboard' && <DashboardTab project={project} setProject={setProject} shots={shots} setShots={setShots} assets={assets} setAssets={setAssets} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} setApiKey={setApiKey} />}
+                {activeTab === 'dashboard' && <DashboardTab project={project} setProject={setProject} shots={shots} setShots={setShots} assets={assets} setAssets={setAssets} isReadOnly={isReadOnly} showDialog={showDialog} apiKey={apiKey} setApiKey={setApiKey} selectedModel={selectedModel} setSelectedModel={setSelectedModel} />}
                 
                 <Modal isOpen={!!dialogConfig} onClose={() => setDialogConfig(null)} title={dialogConfig?.type === 'confirm' ? 'Konfirmasi' : 'Pemberitahuan'}>
                     <p className="text-zinc-300 text-sm mb-6">{dialogConfig?.message}</p>
